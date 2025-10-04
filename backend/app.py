@@ -22,7 +22,7 @@ CORS(app, resources={
     r"/*": {
         "origins": [
             "http://localhost:3000",
-            "feedback-prioritizer.vercel.app",
+            "https://feedback-prioritizer.vercel.app",
             "https://*.vercel.app"  # Allow all Vercel preview deployments
         ]
     }
