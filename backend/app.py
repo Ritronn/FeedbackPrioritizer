@@ -18,7 +18,13 @@ import google.generativeai as genai
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={
+    r"/*": {
+        "origins": "*",  # In production, replace with your Vercel URL
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type"]
+    }
+})
 
 # --- Configuration ---
 DB_PATH = 'feedback.db'
