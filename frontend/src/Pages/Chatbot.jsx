@@ -55,7 +55,7 @@ function Chatbot({ dashboardData }) {
       } else {
         setMessages(prev => [...prev, { 
           role: 'assistant', 
-          content: `Network error: ${error.message}. Make sure the backend is running.` 
+          content: `Error: ${data.error || 'Could not process your question'}` 
         }]);
       }
     } catch (error) {
