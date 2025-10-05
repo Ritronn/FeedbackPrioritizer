@@ -30,7 +30,7 @@ function Chatbot({ dashboardData }) {
     try {
       console.log('🚀 Sending request to backend...');
       
-      const response = await fetch('http://localhost:5000/chat', {
+      const response = await fetch('https://feedbackprioritizer-production-425f.up.railway.app/chat', {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
@@ -55,7 +55,7 @@ function Chatbot({ dashboardData }) {
       } else {
         setMessages(prev => [...prev, { 
           role: 'assistant', 
-          content: `Error: ${data.error || 'Could not process your question'}` 
+          content: `Network error: ${error.message}. Make sure the backend is running.` 
         }]);
       }
     } catch (error) {

@@ -33,7 +33,8 @@ import Chatbot from './Chatbot';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, Title, Tooltip, Legend);
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+const API_URL = process.env.REACT_APP_API_URL || 'https://feedbackprioritizer-production-425f.up.railway.app';
+
 
 function Home() {
   const [file, setFile] = useState(null);

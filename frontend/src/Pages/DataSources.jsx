@@ -17,7 +17,7 @@ export default function DataSources() {
 
   const fetchCurrentConfig = async () => {
     try {
-      const res = await fetch('http://localhost:5000/sources/get');
+      const res = await fetch('https://feedbackprioritizer-production-425f.up.railway.app/sources/get');
       const data = await res.json();
       if (data.configured !== false) {
         setCurrentConfig(data);
@@ -37,7 +37,7 @@ export default function DataSources() {
     setMessage('');
     
     try {
-      const res = await fetch('http://localhost:5000/sources/configure', {
+      const res = await fetch('https://feedbackprioritizer-production-425f.up.railway.app/sources/configure',  {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config)
@@ -63,7 +63,7 @@ export default function DataSources() {
     setMessage('Testing collection... check console');
     
     try {
-      const res = await fetch('http://localhost:5000/test-collection', {
+      const res = await fetch('https://feedbackprioritizer-production-425f.up.railway.app/test-collection', {
         method: 'POST'
       });
       
