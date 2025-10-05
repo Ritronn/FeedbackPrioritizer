@@ -638,6 +638,7 @@ Answer based on the dashboard data above. Be concise and helpful. Use numbers an
             "error": str(e),
             "message": "Failed to process your question"
         }), 500
+    
 
 # --- Run Server ---
 if __name__ == '__main__':
