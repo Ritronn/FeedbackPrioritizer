@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import './DataSources.css';
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
 export default function DataSources() {
   const [config, setConfig] = useState({
@@ -18,7 +17,7 @@ export default function DataSources() {
 
   const fetchCurrentConfig = async () => {
     try {
-      const res = await fetch(`${API_URL}/sources/get`);
+      const res = await fetch('http://localhost:5000/sources/get');
       const data = await res.json();
       if (data.configured !== false) {
         setCurrentConfig(data);
@@ -38,7 +37,7 @@ export default function DataSources() {
     setMessage('');
     
     try {
-      const res = await fetch(`${API_URL}/sources/configure`, {
+      const res = await fetch('http://localhost:5000/sources/configure', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config)
@@ -64,7 +63,7 @@ export default function DataSources() {
     setMessage('Testing collection... check console');
     
     try {
-      const res = await fetch(`${API_URL}/test-collection`,    {
+      const res = await fetch('http://localhost:5000/test-collection', {
         method: 'POST'
       });
       

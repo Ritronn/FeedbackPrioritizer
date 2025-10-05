@@ -14,7 +14,7 @@ API_KEY = os.getenv('GEMINI_API_KEY')
 if not API_KEY:
     raise ValueError("GEMINI_API_KEY not found. Please set it in your .env file.")
 
-MODEL_NAME = 'gemini-2.0-flash-exp'
+MODEL_NAME = 'gemini-2.0-flash'
 API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY}"
 
 # --- SQLite Database Setup ---
@@ -152,7 +152,6 @@ async def analyze_feedback_batch_async(session, batch_data, batch_num, semaphore
                 
                 print(f"[Batch {batch_num}] ✓ Processed {len(results)} feedbacks")
                 
-                # Small delay to respect rate limits
                 await asyncio.sleep(0.3)
                 
                 return results

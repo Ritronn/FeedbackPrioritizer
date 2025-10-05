@@ -20,20 +20,27 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app, resources={
     r"/*": {
-        "origins": "*",  # In production, replace with your Vercel URL
+        "origins": "*",  # In production, replace with your frontend URL
         "methods": ["GET", "POST", "OPTIONS"],
         "allow_headers": ["Content-Type"]
     }
 })
 
 # --- Configuration ---
-DB_PATH = 'feedback.db'
+# ✅ CHANGED: Use Railway Volume path for persistent storage
+DATA_DIR = os.getenv('DATA_DIR', '/data')  # Railway volume mount point
+os.makedirs(DATA_DIR, exist_ok=True)
+DB_PATH = os.path.join(DATA_DIR, 'feedback.db')
+
 SMTP_EMAIL = os.getenv('SMTP_EMAIL')
 SMTP_PASSWORD = os.getenv('SMTP_PASSWORD')
 RECIPIENT_EMAIL = os.getenv('RECIPIENT_EMAIL', SMTP_EMAIL)
 SMTP_SERVER = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
 SMTP_PORT = int(os.getenv('SMTP_PORT', 587))
 SLACK_WEBHOOK = os.getenv('SLACK_WEBHOOK_URL')
+
+# ✅ ADDED: Railway-specific config
+PORT = int(os.getenv('PORT', 5000))  # Railway sets this automatically
 
 # --- Database Setup ---
 def init_db():
@@ -43,7 +50,7 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         feedback_id INTEGER,
         feedback_text TEXT,
-        source TEXT,  -- ADD THIS LINE
+        source TEXT,
         sentiment TEXT,
         sentiment_score REAL,
         category TEXT,
@@ -57,6 +64,7 @@ def init_db():
     conn.close()
 
 init_db()
+
 def init_sources_table():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -72,7 +80,7 @@ def init_sources_table():
     conn.commit()
     conn.close()
 
-init_sources_table()  
+init_sources_table()
 
 # --- Helper Functions ---
 def save_to_db(results, original_feedbacks):
@@ -188,7 +196,7 @@ def send_weekly_email():
         
         html += """
             <p style="margin-top: 30px; color: #666;">
-                View full dashboard at <a href="http://localhost:5000/dashboard">your dashboard</a>
+                View full dashboard at your deployed dashboard URL
             </p>
         </body>
         </html>
@@ -220,6 +228,8 @@ def send_weekly_email():
 def home():
     return jsonify({
         "message": "🚀 Customer Feedback Prioritizer API",
+        "status": "running",
+        "database": "connected" if os.path.exists(DB_PATH) else "not found",
         "endpoints": {
             "POST /upload": "Upload CSV file for analysis",
             "GET /dashboard": "Get dashboard data (JSON)",
@@ -228,6 +238,15 @@ def home():
             "GET /export": "Download analyzed data as CSV",
             "POST /send-email": "Manually trigger email report"
         }
+    })
+
+@app.route('/health', methods=['GET'])
+def health():
+    """Health check endpoint for Railway"""
+    return jsonify({
+        "status": "healthy",
+        "database": "connected" if os.path.exists(DB_PATH) else "missing",
+        "timestamp": datetime.now().isoformat()
     })
 
 @app.route('/upload', methods=['POST'])
@@ -258,22 +277,19 @@ def upload_feedback():
         if 'feedback_text' not in df.columns:
             return jsonify({"error": "No feedback text column found. Required: 'feedback_text'"}), 400
         
-        # ✅ FIXED: Handle source column properly
+        # Handle source column properly
         if 'source' not in df.columns:
-            # If no source column, check for common variations
             for col in ['Source', 'platform', 'Platform', 'channel', 'Channel']:
                 if col in df.columns:
                     df.rename(columns={col: 'source'}, inplace=True)
                     break
             
-            # If still no source column, set default to 'CSV Upload'
             if 'source' not in df.columns:
                 df['source'] = 'CSV Upload'
         
-        # Convert to dict with source included
         feedbacks = df[['id', 'feedback_text', 'source']].to_dict('records')
         
-        # Process using your gemini_agent.py
+        # Process using gemini_agent
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         results = loop.run_until_complete(process_feedbacks_async(feedbacks))
@@ -323,10 +339,8 @@ def configure_sources():
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         
-        # Delete old config (only one config allowed for now)
         c.execute('DELETE FROM data_sources')
         
-        # Insert new config
         c.execute('''INSERT INTO data_sources 
                     (reddit_subreddit, reddit_query, google_sheet_url, enabled)
                     VALUES (?, ?, ?, 1)''',
@@ -359,7 +373,6 @@ def collect_and_analyze_weekly():
     print("\n🔄 Starting weekly data collection...")
     
     try:
-        # Get configured sources
         conn = get_db_connection()
         source_config = conn.execute('SELECT * FROM data_sources WHERE enabled = 1 LIMIT 1').fetchone()
         conn.close()
@@ -370,7 +383,6 @@ def collect_and_analyze_weekly():
         
         all_feedbacks = []
         
-        # Fetch from Reddit
         if source_config['reddit_subreddit']:
             reddit_data = fetch_reddit_feedback(
                 source_config['reddit_subreddit'],
@@ -379,7 +391,6 @@ def collect_and_analyze_weekly():
             )
             all_feedbacks.extend(reddit_data)
         
-        # Fetch from Google Sheets
         if source_config['google_sheet_url']:
             sheets_data = fetch_google_sheets_feedback(source_config['google_sheet_url'])
             all_feedbacks.extend(sheets_data)
@@ -388,29 +399,24 @@ def collect_and_analyze_weekly():
             print("⚠️  No feedback collected")
             return
         
-        # Assign unique IDs
         for idx, fb in enumerate(all_feedbacks):
             fb['id'] = idx + 1
         
         print(f"📊 Collected {len(all_feedbacks)} total feedbacks")
         
-        # Analyze with Gemini
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         results = loop.run_until_complete(process_feedbacks_async(all_feedbacks))
         loop.close()
         
         if results:
-            # Clear old data
             conn = sqlite3.connect(DB_PATH)
             conn.execute('DELETE FROM feedback_analysis')
             conn.commit()
             conn.close()
             
-            # Save new results
             save_to_db(results, all_feedbacks)
             
-            # Update last_synced timestamp
             conn = sqlite3.connect(DB_PATH)
             conn.execute('UPDATE data_sources SET last_synced = ? WHERE id = ?',
                         (datetime.now(), source_config['id']))
@@ -419,7 +425,6 @@ def collect_and_analyze_weekly():
             
             print(f"✅ Analyzed and saved {len(results)} feedbacks")
             
-            # Send email report
             send_weekly_email()
         
     except Exception as e:
@@ -440,13 +445,11 @@ def get_dashboard():
     try:
         conn = get_db_connection()
         
-        # Get all feedback
         feedbacks = conn.execute('''SELECT * FROM feedback_analysis 
                                    ORDER BY priority_score DESC, created_at DESC''').fetchall()
         
         feedback_list = [dict(row) for row in feedbacks]
         
-        # Calculate stats
         total = len(feedback_list)
         stats = {
             "total_feedback": total,
@@ -465,7 +468,6 @@ def get_dashboard():
             "avg_priority_score": sum(f['priority_score'] for f in feedback_list) / total if total > 0 else 0
         }
         
-        # Category breakdown
         for f in feedback_list:
             cat = f['category']
             stats['by_category'][cat] = stats['by_category'].get(cat, 0) + 1
@@ -474,8 +476,8 @@ def get_dashboard():
         
         return jsonify({
             "stats": stats,
-            "feedbacks": feedback_list[:100],  # Return top 100 for performance
-            "top_priority": feedback_list[:10]  # Top 10 critical issues
+            "feedbacks": feedback_list[:100],
+            "top_priority": feedback_list[:10]
         })
         
     except Exception as e:
@@ -527,8 +529,10 @@ def export_data():
     df = pd.read_sql_query('SELECT * FROM feedback_analysis ORDER BY priority_score DESC', conn)
     conn.close()
     
-    output_path = 'exports/feedback_export.csv'
-    os.makedirs('exports', exist_ok=True)
+    # ✅ CHANGED: Use volume path for exports
+    export_dir = os.path.join(DATA_DIR, 'exports')
+    os.makedirs(export_dir, exist_ok=True)
+    output_path = os.path.join(export_dir, 'feedback_export.csv')
     df.to_csv(output_path, index=False)
     
     return send_file(output_path, as_attachment=True, download_name=f'feedback_{datetime.now().strftime("%Y%m%d")}.csv')
@@ -551,7 +555,6 @@ scheduler.start()
 def chat():
     """AI chatbot that queries database directly"""
     try:
-        # Add logging to debug
         print("📨 Received chat request")
         
         data = request.json
@@ -564,10 +567,8 @@ def chat():
         
         print(f"❓ Question: {question}")
         
-        # Query database directly
         conn = get_db_connection()
         
-        # Get stats
         total_feedback = conn.execute('SELECT COUNT(*) FROM feedback_analysis').fetchone()[0]
         
         urgency_stats = conn.execute('''
@@ -605,7 +606,6 @@ def chat():
         
         conn.close()
         
-        # Build context
         context = f"""You are a helpful dashboard assistant. Answer questions about this feedback data concisely and friendly.
 
 Current Dashboard Stats:
@@ -639,7 +639,6 @@ Urgency Breakdown:
         
         print("🔧 Calling Gemini API...")
         
-        # Call Gemini
         genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
         model = genai.GenerativeModel('gemini-2.0-flash-exp')
         
@@ -664,21 +663,22 @@ Answer based on the dashboard data above. Be concise and helpful. Use numbers an
         import traceback
         traceback.print_exc()
         
-        # Return more specific error
         return jsonify({
             "success": False,
             "error": str(e),
             "message": "Failed to process your question"
         }), 500
+
 # --- Run Server ---
 if __name__ == '__main__':
     print("\n" + "="*60)
     print("🚀 Customer Feedback Prioritizer Server")
     print("="*60)
-    print("📍 Server: http://localhost:5000")
-    print("📊 Dashboard: http://localhost:5000/dashboard")
+    print(f"📍 Port: {PORT}")
+    print(f"🗄️  Database: {DB_PATH}")
     print("📧 Email: Scheduled every Monday at 9 AM")
     print("💬 Slack: Enabled" if SLACK_WEBHOOK else "💬 Slack: Not configured")
     print("="*60 + "\n")
     
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    # ✅ CHANGED: Use Railway's PORT and bind to 0.0.0.0
+    app.run(debug=False, host='0.0.0.0', port=PORT)
