@@ -132,97 +132,27 @@ def send_slack_alert(top_issues):
 
 # --- Email Functions ---
 def send_weekly_email():
-    """Send weekly priority report via email"""
-    if not all([SMTP_EMAIL, SMTP_PASSWORD, RECIPIENT_EMAIL]):
-        print("⚠️  Email not configured. Skipping email send.")
+    """Send weekly priority report via Slack (email disabled on Railway)"""
+    if not SLACK_WEBHOOK:
+        print("⚠️  Notifications disabled: Configure SLACK_WEBHOOK_URL")
         return
     
     try:
         conn = get_db_connection()
- 
         week_ago = datetime.now() - timedelta(days=7)
         query = '''SELECT * FROM feedback_analysis 
                    WHERE created_at >= ? 
                    ORDER BY priority_score DESC LIMIT 10'''
         
         top_issues = conn.execute(query, (week_ago,)).fetchall()
-
-        stats = conn.execute('''SELECT 
-            COUNT(*) as total,
-            SUM(CASE WHEN urgency_level = 'critical' THEN 1 ELSE 0 END) as critical,
-            SUM(CASE WHEN urgency_level = 'high' THEN 1 ELSE 0 END) as high,
-            category, COUNT(*) as count
-            FROM feedback_analysis 
-            WHERE created_at >= ?
-            GROUP BY category''', (week_ago,)).fetchall()
-        
         conn.close()
         
-        # Build HTML email
-        html = f"""
-        <html>
-        <head>
-            <style>
-                body {{ font-family: Arial, sans-serif; }}
-                .header {{ background: #4F46E5; color: white; padding: 20px; }}
-                .issue {{ border-left: 4px solid #EF4444; padding: 10px; margin: 10px 0; background: #FEE; }}
-                .stats {{ background: #F3F4F6; padding: 15px; margin: 20px 0; }}
-            </style>
-        </head>
-        <body>
-            <div class="header">
-                <h1>📊 Weekly Feedback Priority Report</h1>
-                <p>{datetime.now().strftime('%B %d, %Y')}</p>
-            </div>
-            
-            <div class="stats">
-                <h2>📈 This Week's Stats</h2>
-                <p><strong>Total Feedback:</strong> {len(top_issues)}</p>
-            </div>
-            
-            <h2>🔥 Top 10 Priority Issues</h2>
-        """
-        
-        for issue in top_issues:
-            urgency_emoji = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}
-            html += f"""
-            <div class="issue">
-                <p><strong>{urgency_emoji.get(issue['urgency_level'], '⚪')} Priority: {issue['priority_score']}/100</strong></p>
-                <p><strong>Category:</strong> {issue['category']}</p>
-                <p><strong>Issue:</strong> {issue['key_issue']}</p>
-                <p><strong>Action:</strong> {issue['suggested_action']}</p>
-            </div>
-            """
-        
-        html += """
-            <p style="margin-top: 30px; color: #666;">
-                View full dashboard at your deployed dashboard URL
-            </p>
-        </body>
-        </html>
-        """
-        
-        # Send email
-        msg = MIMEMultipart('alternative')
-        msg['Subject'] = f"Weekly Feedback Report - {datetime.now().strftime('%b %d, %Y')}"
-        msg['From'] = SMTP_EMAIL
-        msg['To'] = RECIPIENT_EMAIL
-        
-        msg.attach(MIMEText(html, 'html'))
-        
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.starttls()
-            server.login(SMTP_EMAIL, SMTP_PASSWORD)
-            server.send_message(msg)
-        
-        print(f"✅ Weekly email sent to {RECIPIENT_EMAIL}")
-        
-        # Send to Slack
+        # Just send Slack alert
         send_slack_alert([dict(i) for i in top_issues])
+        print("✅ Weekly report sent to Slack")
         
     except Exception as e:
-        print(f"❌ Email error: {e}")
-
+        print(f"❌ Report error: {e}")
 # --- API Endpoints ---
 @app.route('/')
 def home():
