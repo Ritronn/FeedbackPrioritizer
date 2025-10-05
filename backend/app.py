@@ -7,40 +7,35 @@ from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from dotenv import load_dotenv
 from apscheduler.schedulers.background import BackgroundScheduler
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 import requests
 from gemini_agent import process_feedbacks_async, build_prompt
 from data_collectors import fetch_reddit_feedback, fetch_google_sheets_feedback
 import google.generativeai as genai
+from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import Mail
 
 load_dotenv()
 
 app = Flask(__name__)
 CORS(app, resources={
     r"/*": {
-        "origins": "*",  # In production, replace with your frontend URL
+        "origins": "*",
         "methods": ["GET", "POST", "OPTIONS"],
         "allow_headers": ["Content-Type"]
     }
 })
 
 # --- Configuration ---
-# ✅ CHANGED: Use Railway Volume path for persistent storage
-DATA_DIR = os.getenv('DATA_DIR', '/data')  # Railway volume mount point
+DATA_DIR = os.getenv('DATA_DIR', '/data')
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH = os.path.join(DATA_DIR, 'feedback.db')
 
-SMTP_EMAIL = os.getenv('SMTP_EMAIL')
-SMTP_PASSWORD = os.getenv('SMTP_PASSWORD')
-RECIPIENT_EMAIL = os.getenv('RECIPIENT_EMAIL', SMTP_EMAIL)
-SMTP_SERVER = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
-SMTP_PORT = int(os.getenv('SMTP_PORT', 587))
+SENDER_EMAIL = os.getenv('SENDER_EMAIL', 'noreply@yourdomain.com')
+RECIPIENT_EMAIL = os.getenv('RECIPIENT_EMAIL')
+SENDGRID_API_KEY = os.getenv('SENDGRID_API_KEY')
 SLACK_WEBHOOK = os.getenv('SLACK_WEBHOOK_URL')
 
-# ✅ ADDED: Railway-specific config
-PORT = int(os.getenv('PORT', 5000))  # Railway sets this automatically
+PORT = int(os.getenv('PORT', 5000))
 
 # --- Database Setup ---
 def init_db():
@@ -111,11 +106,11 @@ def get_db_connection():
 def send_slack_alert(top_issues):
     """Send top priority issues to Slack"""
     if not SLACK_WEBHOOK:
-        print("⚠️  Slack webhook not configured")
+        print("Slack webhook not configured")
         return
     
     try:
-        message = "🔥 *Weekly Top Priority Issues*\n\n"
+        message = "Weekly Top Priority Issues\n\n"
         for issue in top_issues[:5]:
             urgency_emoji = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}
             emoji = urgency_emoji.get(issue['urgency_level'], '⚪')
@@ -124,19 +119,15 @@ def send_slack_alert(top_issues):
         
         response = requests.post(SLACK_WEBHOOK, json={"text": message})
         if response.status_code == 200:
-            print("✅ Slack message sent")
+            print("Slack message sent")
         else:
-            print(f"❌ Slack error: {response.status_code}")
+            print(f"Slack error: {response.status_code}")
     except Exception as e:
-        print(f"❌ Slack error: {e}")
+        print(f"Slack error: {e}")
 
 # --- Email Functions ---
 def send_weekly_email():
-    """Send weekly priority report via Slack (email disabled on Railway)"""
-    if not SLACK_WEBHOOK:
-        print("⚠️  Notifications disabled: Configure SLACK_WEBHOOK_URL")
-        return
-    
+    """Send weekly priority report via SendGrid and Slack"""
     try:
         conn = get_db_connection()
         week_ago = datetime.now() - timedelta(days=7)
@@ -147,17 +138,74 @@ def send_weekly_email():
         top_issues = conn.execute(query, (week_ago,)).fetchall()
         conn.close()
         
-        # Just send Slack alert
-        send_slack_alert([dict(i) for i in top_issues])
-        print("✅ Weekly report sent to Slack")
+        top_issues_list = [dict(i) for i in top_issues]
+        
+        # Send to Slack
+        if SLACK_WEBHOOK:
+            send_slack_alert(top_issues_list)
+        
+        # Send email via SendGrid
+        if SENDGRID_API_KEY and RECIPIENT_EMAIL:
+            html = f"""<html>
+            <head>
+                <style>
+                    body {{ font-family: Arial, sans-serif; }}
+                    .header {{ background: #4F46E5; color: white; padding: 20px; }}
+                    .issue {{ border-left: 4px solid #EF4444; padding: 15px; margin: 15px 0; background: #FEF2F2; }}
+                    .priority {{ font-size: 18px; font-weight: bold; color: #DC2626; }}
+                </style>
+            </head>
+            <body>
+                <div class="header">
+                    <h1>Weekly Feedback Priority Report</h1>
+                    <p>{datetime.now().strftime('%B %d, %Y')}</p>
+                </div>
+                
+                <h2 style="margin: 20px;">Top 10 Priority Issues</h2>
+            """
+            
+            for issue in top_issues_list:
+                urgency_colors = {"critical": "#DC2626", "high": "#F59E0B", "medium": "#FCD34D", "low": "#10B981"}
+                color = urgency_colors.get(issue['urgency_level'], "#6B7280")
+                
+                html += f"""
+                <div class="issue" style="border-left-color: {color};">
+                    <div class="priority">Priority: {issue['priority_score']}/100</div>
+                    <p><strong>Issue:</strong> {issue['key_issue']}</p>
+                    <p><strong>Category:</strong> {issue['category']} | <strong>Urgency:</strong> {issue['urgency_level'].capitalize()}</p>
+                    <p><strong>Suggested Action:</strong> {issue['suggested_action']}</p>
+                </div>
+                """
+            
+            html += """
+                <p style="margin: 30px 20px; color: #666;">
+                    This is an automated weekly report from your Feedback Prioritizer system.
+                </p>
+            </body>
+            </html>
+            """
+            
+            message = Mail(
+                from_email=SENDER_EMAIL,
+                to_emails=RECIPIENT_EMAIL,
+                subject=f"Weekly Feedback Report - {datetime.now().strftime('%b %d, %Y')}",
+                html_content=html
+            )
+            
+            sg = SendGridAPIClient(SENDGRID_API_KEY)
+            response = sg.send(message)
+            print(f"Email sent via SendGrid (Status: {response.status_code})")
+        else:
+            print("SendGrid not configured - skipping email")
         
     except Exception as e:
-        print(f"❌ Report error: {e}")
+        print(f"Report error: {e}")
+
 # --- API Endpoints ---
 @app.route('/')
 def home():
     return jsonify({
-        "message": "🚀 Customer Feedback Prioritizer API",
+        "message": "Customer Feedback Prioritizer API",
         "status": "running",
         "database": "connected" if os.path.exists(DB_PATH) else "not found",
         "endpoints": {
@@ -190,14 +238,12 @@ def upload_feedback():
         return jsonify({"error": "Empty filename"}), 400
     
     try:
-        # Read and validate CSV
         df = pd.read_csv(file)
         df.columns = df.columns.str.strip()
         
         if 'id' not in df.columns:
             df['id'] = range(1, len(df) + 1)
         
-        # Handle feedback_text column
         if 'feedback_text' not in df.columns:
             for col in ['feedback', 'text', 'comment', 'Feedback']:
                 if col in df.columns:
@@ -207,7 +253,6 @@ def upload_feedback():
         if 'feedback_text' not in df.columns:
             return jsonify({"error": "No feedback text column found. Required: 'feedback_text'"}), 400
         
-        # Handle source column properly
         if 'source' not in df.columns:
             for col in ['Source', 'platform', 'Platform', 'channel', 'Channel']:
                 if col in df.columns:
@@ -219,7 +264,6 @@ def upload_feedback():
         
         feedbacks = df[['id', 'feedback_text', 'source']].to_dict('records')
         
-        # Process using gemini_agent
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         results = loop.run_until_complete(process_feedbacks_async(feedbacks))
@@ -228,17 +272,14 @@ def upload_feedback():
         if not results:
             return jsonify({"error": "Analysis failed. Check API key and quota."}), 500
         
-        # Clear previous data before saving new analysis
         conn = sqlite3.connect(DB_PATH)
         conn.execute('DELETE FROM feedback_analysis')
         conn.commit()
         conn.close()
-        print("🗑️  Cleared previous data")
+        print("Cleared previous data")
         
-        # Save to database
         save_to_db(results, feedbacks)
         
-        # Send Slack alert for critical issues
         critical_issues = [r for r in results if r['urgency_level'] == 'critical']
         if critical_issues:
             send_slack_alert(critical_issues)
@@ -300,7 +341,7 @@ def get_sources():
 
 def collect_and_analyze_weekly():
     """Fetch data from configured sources and analyze"""
-    print("\n🔄 Starting weekly data collection...")
+    print("\nStarting weekly data collection...")
     
     try:
         conn = get_db_connection()
@@ -308,7 +349,7 @@ def collect_and_analyze_weekly():
         conn.close()
         
         if not source_config:
-            print("⚠️  No data sources configured")
+            print("No data sources configured")
             return
         
         all_feedbacks = []
@@ -326,13 +367,13 @@ def collect_and_analyze_weekly():
             all_feedbacks.extend(sheets_data)
         
         if not all_feedbacks:
-            print("⚠️  No feedback collected")
+            print("No feedback collected")
             return
         
         for idx, fb in enumerate(all_feedbacks):
             fb['id'] = idx + 1
         
-        print(f"📊 Collected {len(all_feedbacks)} total feedbacks")
+        print(f"Collected {len(all_feedbacks)} total feedbacks")
         
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -353,12 +394,12 @@ def collect_and_analyze_weekly():
             conn.commit()
             conn.close()
             
-            print(f"✅ Analyzed and saved {len(results)} feedbacks")
+            print(f"Analyzed and saved {len(results)} feedbacks")
             
             send_weekly_email()
         
     except Exception as e:
-        print(f"❌ Weekly collection error: {e}")
+        print(f"Weekly collection error: {e}")
 
 @app.route('/test-collection', methods=['POST'])
 def test_collection():
@@ -459,7 +500,6 @@ def export_data():
     df = pd.read_sql_query('SELECT * FROM feedback_analysis ORDER BY priority_score DESC', conn)
     conn.close()
     
-    # ✅ CHANGED: Use volume path for exports
     export_dir = os.path.join(DATA_DIR, 'exports')
     os.makedirs(export_dir, exist_ok=True)
     output_path = os.path.join(export_dir, 'feedback_export.csv')
@@ -485,17 +525,17 @@ scheduler.start()
 def chat():
     """AI chatbot that queries database directly"""
     try:
-        print("📨 Received chat request")
+        print("Received chat request")
         
         data = request.json
-        print(f"📝 Request data: {data}")
+        print(f"Request data: {data}")
         
         question = data.get('question', '')
         
         if not question:
             return jsonify({"success": False, "error": "No question provided"}), 400
         
-        print(f"❓ Question: {question}")
+        print(f"Question: {question}")
         
         conn = get_db_connection()
         
@@ -567,7 +607,7 @@ Urgency Breakdown:
             for idx, issue in enumerate(top_issues, 1):
                 context += f"{idx}. {issue['key_issue']} ({issue['category']}) - Priority: {issue['priority_score']}\n"
         
-        print("🔧 Calling Gemini API...")
+        print("Calling Gemini API...")
         
         genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
         model = genai.GenerativeModel('gemini-2.0-flash-exp')
@@ -581,7 +621,7 @@ Answer based on the dashboard data above. Be concise and helpful. Use numbers an
         response = model.generate_content(prompt)
         answer = response.text
         
-        print(f"✅ Response generated: {answer[:100]}...")
+        print(f"Response generated: {answer[:100]}...")
         
         return jsonify({
             "success": True,
@@ -589,7 +629,7 @@ Answer based on the dashboard data above. Be concise and helpful. Use numbers an
         })
         
     except Exception as e:
-        print(f"❌ Chat error: {e}")
+        print(f"Chat error: {e}")
         import traceback
         traceback.print_exc()
         
@@ -602,13 +642,13 @@ Answer based on the dashboard data above. Be concise and helpful. Use numbers an
 # --- Run Server ---
 if __name__ == '__main__':
     print("\n" + "="*60)
-    print("🚀 Customer Feedback Prioritizer Server")
+    print("Customer Feedback Prioritizer Server")
     print("="*60)
-    print(f"📍 Port: {PORT}")
-    print(f"🗄️  Database: {DB_PATH}")
-    print("📧 Email: Scheduled every Monday at 9 AM")
-    print("💬 Slack: Enabled" if SLACK_WEBHOOK else "💬 Slack: Not configured")
+    print(f"Port: {PORT}")
+    print(f"Database: {DB_PATH}")
+    print("Email: Scheduled every Monday at 9 AM")
+    print("Slack: Enabled" if SLACK_WEBHOOK else "Slack: Not configured")
+    print("SendGrid: Enabled" if SENDGRID_API_KEY else "SendGrid: Not configured")
     print("="*60 + "\n")
     
-    # ✅ CHANGED: Use Railway's PORT and bind to 0.0.0.0
     app.run(debug=False, host='0.0.0.0', port=PORT)
